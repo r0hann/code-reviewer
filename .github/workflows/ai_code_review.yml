@@ -1,0 +1,32 @@
+name: Automated AI Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize] # Runs on new PRs or whenever a developer pushes new commits
+
+jobs:
+  run-reviewer:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write # Essential permission to let the script leave/update comments
+      contents: read
+
+    steps:
+      - name: Checkout repository code
+        uses: actions/checkout@v4
+
+      - name: Set up Python Environment
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install langgraph langchain-groq PyGithub
+
+      - name: Execute LangGraph Review Agent
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Provided natively by GitHub Actions
+        run: python github_reviewer.py
