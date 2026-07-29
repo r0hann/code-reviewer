@@ -3,6 +3,15 @@ name: Automated AI Code Review
 on:
   pull_request:
     types: [opened, synchronize] # Runs on new PRs or whenever a developer pushes new commits
+  workflow_call: # Lets other repos call this workflow directly instead of copy-pasting it
+    inputs:
+      groq_model:
+        description: "Groq model id (optional, defaults to llama3-8b-8192)"
+        required: false
+        type: string
+    secrets:
+      GROQ_API_KEY:
+        required: true
 
 jobs:
   run-reviewer:
@@ -12,8 +21,11 @@ jobs:
       contents: read
 
     steps:
-      - name: Checkout repository code
+      - name: Checkout reviewer script
         uses: actions/checkout@v4
+        with:
+          repository: r0hann/code-reviewer
+          ref: main
 
       - name: Set up Python Environment
         uses: actions/setup-python@v5
@@ -28,5 +40,6 @@ jobs:
       - name: Execute LangGraph Review Agent
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_MODEL: ${{ inputs.groq_model }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Provided natively by GitHub Actions
         run: python github_reviewer.py

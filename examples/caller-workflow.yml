@@ -1,0 +1,26 @@
+# Copy this file into any other repo as .github/workflows/ai_code_review.yml
+# to get the same AI code review powered by r0hann/code-reviewer.
+#
+# Setup in the target repo:
+#   1. Settings -> Secrets and variables -> Actions -> New repository secret
+#      Name: GROQ_API_KEY   Value: your Groq API key
+#   2. Commit this file as .github/workflows/ai_code_review.yml
+#   3. Open a PR - the review comment will appear automatically.
+
+name: Automated AI Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  call-reviewer:
+    uses: r0hann/code-reviewer/.github/workflows/ai_code_review.yml@main
+    permissions:
+      pull-requests: write
+      contents: read
+    secrets:
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+    # Optional: pin a specific Groq model instead of the default llama3-8b-8192
+    # with:
+    #   groq_model: "llama-3.1-8b-instant"
