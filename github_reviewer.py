@@ -1,14 +1,17 @@
-import os
-import sys
 import json
+import os
+import re
+import sys
 
 from github import Github
 from langchain_groq import ChatGroq
-from langgraph.graph import StateGraph, START, END
+from langgraph.graph import END, START, StateGraph
 from typing_extensions import TypedDict
 
-# Marker used to find and update our own previous comment instead of
-# spamming a new one on every push to the PR.
+# Marker used to find and update our own fallback comment instead of
+# spamming a new one on every push to the PR. Inline review comments
+# (the happy path) intentionally create a fresh review each run, same
+# as any other GitHub review bot.
 COMMENT_MARKER = "<!-- ai-code-reviewer:groq-langgraph -->"
 
 # Rough char budget so the diff payload stays inside the model's context
@@ -17,9 +20,12 @@ MAX_PAYLOAD_CHARS = 40000
 
 REVIEWED_EXTENSIONS = (".py", ".js", ".ts", ".go")
 
+HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+
 
 class ReviewState(TypedDict):
     code_changes: str
+    valid_lines: dict
     review_comments: str
     iterations: int
     error: str
@@ -31,7 +37,66 @@ def build_llm():
         model=model_name,
         temperature=0.0,
         groq_api_key=os.environ["GROQ_API_KEY"],
+        model_kwargs={"response_format": {"type": "json_object"}},
     )
+
+
+def annotate_patch(patch):
+    """Render a unified diff patch with new-file line numbers, and return
+    the set of line numbers that are valid to comment on (added or
+    unchanged lines, which exist in the new version of the file)."""
+    annotated_lines = []
+    valid_lines = set()
+    new_line = None
+
+    for raw_line in patch.splitlines():
+        header_match = HUNK_HEADER_RE.match(raw_line)
+        if header_match:
+            new_line = int(header_match.group(1))
+            annotated_lines.append(raw_line)
+            continue
+
+        if new_line is None or raw_line.startswith("\\"):
+            annotated_lines.append(raw_line)
+            continue
+
+        if raw_line.startswith("+"):
+            annotated_lines.append(f"{new_line:>5}: {raw_line}")
+            valid_lines.add(new_line)
+            new_line += 1
+        elif raw_line.startswith("-"):
+            annotated_lines.append(f"     : {raw_line}")
+        else:
+            annotated_lines.append(f"{new_line:>5}: {raw_line}")
+            valid_lines.add(new_line)
+            new_line += 1
+
+    return "\n".join(annotated_lines), valid_lines
+
+
+def gather_changes(pr):
+    changes_payload = ""
+    valid_lines_by_file = {}
+
+    for file in pr.get_files():
+        if not file.filename.endswith(REVIEWED_EXTENSIONS):
+            continue
+        if not file.patch:
+            # Binary files or diffs GitHub considers too large omit `patch`.
+            changes_payload += f"\nFile: {file.filename}\n(diff omitted by GitHub - binary or too large)\n"
+            continue
+
+        annotated, valid_lines = annotate_patch(file.patch)
+        valid_lines_by_file[file.filename] = sorted(valid_lines)
+        changes_payload += f"\nFile: {file.filename}\n{annotated}\n"
+
+    if len(changes_payload) > MAX_PAYLOAD_CHARS:
+        changes_payload = (
+            changes_payload[:MAX_PAYLOAD_CHARS]
+            + "\n\n[... diff truncated to fit model context window ...]"
+        )
+
+    return changes_payload, valid_lines_by_file
 
 
 def analyze_code_node(state: ReviewState):
@@ -39,12 +104,30 @@ def analyze_code_node(state: ReviewState):
     print(f"Running Analysis Loop - Iteration {current_iter + 1}")
 
     prompt = f"""You are an elite senior software engineer auditing a GitHub Pull Request.
-Review the following code changes for security flaws, performance bugs, or bad practices.
+Review the code changes below for security flaws, performance bugs, and bad practices.
+
+Each file's diff is annotated with the line number it will have in the FINAL file,
+shown before each added ('+') or unchanged line. Only cite line numbers that are shown
+in the annotation, and only flag lines that start with '+' (the actual changes) -
+never flag unchanged context lines or removed ('-') lines.
 
 Code to Review:
 {state['code_changes']}
 
-Provide your output in clean Markdown with clear headings. If the code looks perfect, say 'LGTM' (Looks Good To Me).
+Respond with ONLY a single JSON object (no markdown fences, no extra text) matching this schema:
+{{
+  "summary": "1-2 sentence overall summary, or exactly 'LGTM' if there are no issues",
+  "findings": [
+    {{
+      "file": "path/to/file.py",
+      "line": 42,
+      "severity": "high | medium | low",
+      "issue": "short description of the specific problem on that line",
+      "fix_prompt": "A self-contained, copy-paste-ready instruction someone could give an AI coding assistant to fix exactly this issue - include the file, the problem, and the desired fix."
+    }}
+  ]
+}}
+If there are no issues, return an empty "findings" list.
 """
 
     try:
@@ -57,6 +140,58 @@ Provide your output in clean Markdown with clear headings. If the code looks per
         }
     except Exception as e:
         return {"error": str(e), "iterations": current_iter + 1}
+
+
+def parse_review_json(raw_text):
+    text = raw_text.strip()
+    fence_match = re.match(r"^```(?:json)?\s*(.*)```$", text, re.DOTALL)
+    if fence_match:
+        text = fence_match.group(1).strip()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict) or "findings" not in data:
+        return None
+    return data
+
+
+def build_review_comments(findings, valid_lines_by_file):
+    review_comments = []
+    unanchored_notes = []
+
+    for finding in findings:
+        file_path = finding.get("file")
+        line = finding.get("line")
+        issue = finding.get("issue", "").strip()
+        fix_prompt = finding.get("fix_prompt", "").strip()
+        severity = finding.get("severity", "medium").upper()
+
+        valid_lines = valid_lines_by_file.get(file_path, [])
+        if file_path and line in valid_lines and issue:
+            body = f"**{severity}**: {issue}"
+            if fix_prompt:
+                body += f"\n\n**Copy-paste fix prompt:**\n```\n{fix_prompt}\n```"
+            review_comments.append(
+                {"path": file_path, "line": line, "side": "RIGHT", "body": body}
+            )
+        elif issue:
+            unanchored_notes.append(f"- `{file_path}` (line {line}): {issue}")
+
+    return review_comments, unanchored_notes
+
+
+def post_fallback_comment(pull_request, body_text):
+    final_comment = f"{COMMENT_MARKER}\n### \U0001F916 LangGraph AI Code Reviewer\n\n{body_text}"
+    existing = None
+    for comment in pull_request.get_issue_comments():
+        if COMMENT_MARKER in comment.body:
+            existing = comment
+            break
+    if existing:
+        existing.edit(final_comment)
+    else:
+        pull_request.create_issue_comment(final_comment)
 
 
 def post_to_github_node(state: ReviewState):
@@ -72,25 +207,54 @@ def post_to_github_node(state: ReviewState):
     pull_request = repo.get_pull(pr_number)
 
     if state.get("error") and not state.get("review_comments"):
-        body_text = (
+        post_fallback_comment(
+            pull_request,
             "The reviewer failed to produce a review after retrying.\n\n"
-            f"Last error: `{state['error']}`"
+            f"Last error: `{state['error']}`",
         )
-    else:
-        body_text = state["review_comments"]
+        return {}
 
-    final_comment = f"{COMMENT_MARKER}\n### \U0001F916 LangGraph AI Code Reviewer\n\n{body_text}"
+    review_data = parse_review_json(state["review_comments"])
+    if review_data is None:
+        # Model didn't return valid JSON - fall back to posting whatever
+        # text it did produce, so a review still shows up.
+        post_fallback_comment(pull_request, state["review_comments"])
+        return {}
 
-    existing = None
-    for comment in pull_request.get_issue_comments():
-        if COMMENT_MARKER in comment.body:
-            existing = comment
-            break
+    findings = review_data.get("findings", [])
+    summary = review_data.get("summary", "").strip() or "LGTM"
 
-    if existing:
-        existing.edit(final_comment)
-    else:
-        pull_request.create_issue_comment(final_comment)
+    if not findings:
+        post_fallback_comment(pull_request, summary)
+        return {}
+
+    review_comments, unanchored_notes = build_review_comments(
+        findings, state.get("valid_lines", {})
+    )
+
+    body = summary
+    if unanchored_notes:
+        body += "\n\n**Additional notes (couldn't anchor to a line):**\n" + "\n".join(
+            unanchored_notes
+        )
+
+    if not review_comments:
+        post_fallback_comment(pull_request, body)
+        return {}
+
+    try:
+        head_commit = repo.get_commit(pull_request.head.sha)
+        pull_request.create_review(
+            commit=head_commit,
+            body=body,
+            event="COMMENT",
+            comments=review_comments,
+        )
+    except Exception as e:
+        post_fallback_comment(
+            pull_request,
+            f"{body}\n\n(Inline review comments failed to post: `{e}`; showing summary only.)",
+        )
 
     return {}
 
@@ -120,26 +284,6 @@ def build_graph():
     return workflow.compile()
 
 
-def gather_changes(pr):
-    changes_payload = ""
-    for file in pr.get_files():
-        if not file.filename.endswith(REVIEWED_EXTENSIONS):
-            continue
-        if not file.patch:
-            # Binary files or diffs GitHub considers too large omit `patch`.
-            changes_payload += f"\nFile: {file.filename}\n(diff omitted by GitHub - binary or too large)\n"
-            continue
-        changes_payload += f"\nFile: {file.filename}\n{file.patch}\n"
-
-    if len(changes_payload) > MAX_PAYLOAD_CHARS:
-        changes_payload = (
-            changes_payload[:MAX_PAYLOAD_CHARS]
-            + "\n\n[... diff truncated to fit model context window ...]"
-        )
-
-    return changes_payload
-
-
 if __name__ == "__main__":
     g = Github(os.environ["GITHUB_TOKEN"])
     repo = g.get_repo(os.environ["GITHUB_REPOSITORY"])
@@ -148,7 +292,7 @@ if __name__ == "__main__":
 
     pr = repo.get_pull(event_data["number"])
 
-    changes_payload = gather_changes(pr)
+    changes_payload, valid_lines_by_file = gather_changes(pr)
 
     if not changes_payload.strip():
         print("No supported code files were changed in this PR. Skipping.")
@@ -157,6 +301,7 @@ if __name__ == "__main__":
     agent = build_graph()
     initial_state = {
         "code_changes": changes_payload,
+        "valid_lines": valid_lines_by_file,
         "review_comments": "",
         "iterations": 0,
         "error": "",
