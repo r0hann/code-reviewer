@@ -175,7 +175,13 @@ def build_review_comments(findings, valid_lines_by_file):
             if suggestion is not None:
                 body += f"\n\n**Suggestion:**\n```suggestion\n{suggestion}\n```"
             if fix_prompt:
-                body += f"\n\n**Copy-paste fix prompt:**\n```\n{fix_prompt}\n```"
+                # Self-contained so copying just this fenced block (without
+                # the issue line above it) is still enough context for an
+                # AI assistant to act on.
+                copy_prompt = (
+                    f"In {file_path} at line {line}: {issue}\n\nFix: {fix_prompt}"
+                )
+                body += f"\n\n**Copy-paste fix prompt:**\n```\n{copy_prompt}\n```"
             review_comments.append(
                 {"path": file_path, "line": line, "side": "RIGHT", "body": body}
             )
