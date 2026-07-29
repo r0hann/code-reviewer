@@ -26,7 +26,7 @@ class ReviewState(TypedDict):
 
 
 def build_llm():
-    model_name = os.environ.get("GROQ_MODEL", "llama3-8b-8192")
+    model_name = os.environ.get("GROQ_MODEL") or "llama3-8b-8192"
     return ChatGroq(
         model=model_name,
         temperature=0.0,
