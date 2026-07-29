@@ -13,7 +13,7 @@ COMMENT_MARKER = "<!-- ai-code-reviewer:groq-langgraph -->"
 
 # Rough char budget so the diff payload stays inside the model's context
 # window alongside the system/instruction prompt and the model's reply.
-MAX_PAYLOAD_CHARS = 12000
+MAX_PAYLOAD_CHARS = 40000
 
 REVIEWED_EXTENSIONS = (".py", ".js", ".ts", ".go")
 
@@ -26,7 +26,7 @@ class ReviewState(TypedDict):
 
 
 def build_llm():
-    model_name = os.environ.get("GROQ_MODEL") or "llama3-8b-8192"
+    model_name = os.environ.get("GROQ_MODEL") or "llama-3.1-8b-instant"
     return ChatGroq(
         model=model_name,
         temperature=0.0,
