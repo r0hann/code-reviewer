@@ -3,7 +3,9 @@
 #
 # Setup in the target repo:
 #   1. Settings -> Secrets and variables -> Actions -> New repository secret
-#      Name: GROQ_API_KEY   Value: your Groq API key
+#      Add ONE of: GROQ_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY,
+#      GOOGLE_API_KEY, OPENROUTER_API_KEY. The provider is auto-detected
+#      from whichever key you set - no other config needed.
 #   2. Commit this file as .github/workflows/ai_code_review.yml
 #   3. Open a PR - the review comment will appear automatically.
 
@@ -21,6 +23,16 @@ jobs:
       contents: read
     secrets:
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-    # Optional: pin a specific Groq model instead of the default llama3-8b-8192
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+    # Optional overrides - only needed if you want a non-default model,
+    # or have more than one provider key set and want to force one:
     # with:
+    #   llm_provider: "anthropic"       # forces a provider when multiple keys are set
     #   groq_model: "llama-3.1-8b-instant"
+    #   anthropic_model: "claude-haiku-4-5-20251001"
+    #   openai_model: "gpt-4o-mini"
+    #   google_model: "gemini-1.5-flash"
+    #   openrouter_model: "some/model-id"   # required if using openrouter, no default

@@ -4,7 +4,6 @@ import re
 import sys
 
 from github import Github
-from langchain_groq import ChatGroq
 from langgraph.graph import END, START, StateGraph
 from typing_extensions import TypedDict
 
@@ -22,6 +21,16 @@ REVIEWED_EXTENSIONS = (".py", ".js", ".ts", ".go")
 
 HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
+# Checked in order; the first one whose API key env var is set wins,
+# unless LLM_PROVIDER is set explicitly to force a specific provider.
+PROVIDER_KEY_ENV_VARS = [
+    ("groq", "GROQ_API_KEY"),
+    ("anthropic", "ANTHROPIC_API_KEY"),
+    ("openai", "OPENAI_API_KEY"),
+    ("google", "GOOGLE_API_KEY"),
+    ("openrouter", "OPENROUTER_API_KEY"),
+]
+
 
 class ReviewState(TypedDict):
     code_changes: str
@@ -31,14 +40,81 @@ class ReviewState(TypedDict):
     error: str
 
 
-def build_llm():
-    model_name = os.environ.get("GROQ_MODEL") or "llama-3.1-8b-instant"
-    return ChatGroq(
-        model=model_name,
-        temperature=0.0,
-        groq_api_key=os.environ["GROQ_API_KEY"],
-        model_kwargs={"response_format": {"type": "json_object"}},
+def detect_provider():
+    explicit = os.environ.get("LLM_PROVIDER")
+    if explicit:
+        return explicit.strip().lower()
+
+    for provider, key_env_var in PROVIDER_KEY_ENV_VARS:
+        if os.environ.get(key_env_var):
+            return provider
+
+    configured_keys = ", ".join(k for _, k in PROVIDER_KEY_ENV_VARS)
+    raise ValueError(
+        f"No LLM API key found. Set one of: {configured_keys} "
+        "(or set LLM_PROVIDER explicitly if you have more than one configured)."
     )
+
+
+def build_llm():
+    provider = detect_provider()
+
+    if provider == "groq":
+        from langchain_groq import ChatGroq
+
+        model_name = os.environ.get("GROQ_MODEL") or "llama-3.1-8b-instant"
+        return ChatGroq(
+            model=model_name,
+            temperature=0.0,
+            groq_api_key=os.environ["GROQ_API_KEY"],
+            model_kwargs={"response_format": {"type": "json_object"}},
+        )
+
+    if provider == "anthropic":
+        from langchain_anthropic import ChatAnthropic
+
+        model_name = os.environ.get("ANTHROPIC_MODEL") or "claude-haiku-4-5-20251001"
+        return ChatAnthropic(
+            model=model_name,
+            temperature=0.0,
+            anthropic_api_key=os.environ["ANTHROPIC_API_KEY"],
+        )
+
+    if provider == "openai":
+        from langchain_openai import ChatOpenAI
+
+        model_name = os.environ.get("OPENAI_MODEL") or "gpt-4o-mini"
+        return ChatOpenAI(
+            model=model_name,
+            temperature=0.0,
+            api_key=os.environ["OPENAI_API_KEY"],
+            model_kwargs={"response_format": {"type": "json_object"}},
+        )
+
+    if provider == "google":
+        from langchain_google_genai import ChatGoogleGenerativeAI
+
+        model_name = os.environ.get("GOOGLE_MODEL") or "gemini-1.5-flash"
+        return ChatGoogleGenerativeAI(
+            model=model_name,
+            temperature=0.0,
+            google_api_key=os.environ["GOOGLE_API_KEY"],
+        )
+
+    if provider == "openrouter":
+        from langchain_openai import ChatOpenAI
+
+        model_name = os.environ.get("OPENROUTER_MODEL")
+        if not model_name:
+            raise ValueError("OPENROUTER_MODEL must be set when using the openrouter provider.")
+        return ChatOpenAI(
+            model=model_name,
+            temperature=0.0,
+            api_key=os.environ["OPENROUTER_API_KEY"],
+            base_url="https://openrouter.ai/api/v1",
+        )
+
+    raise ValueError(f"Unknown LLM_PROVIDER: {provider!r}")
 
 
 def annotate_patch(patch):

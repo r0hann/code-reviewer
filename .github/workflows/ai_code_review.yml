@@ -5,13 +5,41 @@ on:
     types: [opened, synchronize] # Runs on new PRs or whenever a developer pushes new commits
   workflow_call: # Lets other repos call this workflow directly instead of copy-pasting it
     inputs:
+      llm_provider:
+        description: "Force a provider (groq/anthropic/openai/google/openrouter). Optional - auto-detected from whichever API key secret is set."
+        required: false
+        type: string
       groq_model:
         description: "Groq model id (optional, defaults to llama-3.1-8b-instant)"
         required: false
         type: string
+      anthropic_model:
+        description: "Anthropic model id (optional, defaults to claude-haiku-4-5-20251001)"
+        required: false
+        type: string
+      openai_model:
+        description: "OpenAI model id (optional, defaults to gpt-4o-mini)"
+        required: false
+        type: string
+      google_model:
+        description: "Google model id (optional, defaults to gemini-1.5-flash)"
+        required: false
+        type: string
+      openrouter_model:
+        description: "OpenRouter model id (required if using the openrouter provider - no default)"
+        required: false
+        type: string
     secrets:
       GROQ_API_KEY:
-        required: true
+        required: false
+      ANTHROPIC_API_KEY:
+        required: false
+      OPENAI_API_KEY:
+        required: false
+      GOOGLE_API_KEY:
+        required: false
+      OPENROUTER_API_KEY:
+        required: false
 
 jobs:
   run-reviewer:
@@ -40,7 +68,16 @@ jobs:
 
       - name: Execute LangGraph Review Agent
         env:
+          LLM_PROVIDER: ${{ inputs.llm_provider }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GROQ_MODEL: ${{ inputs.groq_model }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_MODEL: ${{ inputs.anthropic_model }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ inputs.openai_model }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GOOGLE_MODEL: ${{ inputs.google_model }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_MODEL: ${{ inputs.openrouter_model }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Provided natively by GitHub Actions
         run: python github_reviewer.py
