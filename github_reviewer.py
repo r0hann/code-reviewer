@@ -123,7 +123,8 @@ Respond with ONLY a single JSON object (no markdown fences, no extra text) match
       "line": 42,
       "severity": "high | medium | low",
       "issue": "short description of the specific problem on that line",
-      "fix_prompt": "A self-contained, copy-paste-ready instruction someone could give an AI coding assistant to fix exactly this issue - include the file, the problem, and the desired fix."
+      "fix_prompt": "A self-contained, copy-paste-ready instruction someone could give an AI coding assistant to fix exactly this issue - include the file, the problem, and the desired fix.",
+      "suggestion": "The exact replacement code for this single line, preserving original indentation, ready to drop into a GitHub suggested-change block. Use an empty string to suggest deleting the line entirely. Omit this field if the fix can't be expressed as a single-line replacement."
     }}
   ]
 }}
@@ -165,11 +166,14 @@ def build_review_comments(findings, valid_lines_by_file):
         line = finding.get("line")
         issue = finding.get("issue", "").strip()
         fix_prompt = finding.get("fix_prompt", "").strip()
+        suggestion = finding.get("suggestion")
         severity = finding.get("severity", "medium").upper()
 
         valid_lines = valid_lines_by_file.get(file_path, [])
         if file_path and line in valid_lines and issue:
             body = f"**{severity}**: {issue}"
+            if suggestion is not None:
+                body += f"\n\n**Suggestion:**\n```suggestion\n{suggestion}\n```"
             if fix_prompt:
                 body += f"\n\n**Copy-paste fix prompt:**\n```\n{fix_prompt}\n```"
             review_comments.append(
